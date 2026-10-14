@@ -1,3 +1,4 @@
+
 const { execFile } = require('child_process');
 const path = require('path');
 const express = require('express');
@@ -27,24 +28,19 @@ if (!API_KEY) {
 
 connectDB();
 
-// --- New database-driven location & weather endpoints ---
-// GET /api/locations/states
-// GET /api/locations/districts/:state
-// GET /api/locations/areas/:district
-// GET /api/locations/search?query=
+// Database-driven location and weather endpoints
 app.use('/api/locations', locationRoutes);
-// GET /api/weather/:locationId  (distinct from the existing GET /api/weather?q= below —
-// Express tells these apart by path shape, so both coexist safely)
 app.use('/api/weather', weatherRoutes);
 
-// --- Existing endpoints (unchanged) ---
-// WeatherAPI's own search.json is built for cities/towns and often misses small
-// Indian villages/localities/tehsils. We try it first, and if it comes back empty
-// (or errors), we fall back to OpenStreetMap's free Nominatim geocoder, which has
-// much better granular coverage for hyper-local places.
+// Location search endpoint
 app.get('/api/search', async (req, res) => {
   const { q } = req.query;
-  if (!q) return res.status(400).json({ error: 'Query parameter "q" is required' });
+
+  if (!q) {
+    return res.status(400).json({
+      error: 'Query parameter "q" is required'
+    });
+  }
 
   let suggestions = [];
 
@@ -52,57 +48,103 @@ app.get('/api/search', async (req, res) => {
     const response = await axios.get(`${BASE_URL}/search.json`, {
       params: { key: API_KEY, q }
     });
+
     suggestions = response.data.map(item => ({
       name: item.name,
       region: `${item.region ? item.region + ', ' : ''}${item.country}`,
       lat: item.lat,
       lon: item.lon
     }));
-    console.log(`[search] WeatherAPI returned ${suggestions.length} results for "${q}"`);
+
+    console.log(
+      `[search] WeatherAPI returned ${suggestions.length} results for "${q}"`
+    );
   } catch (error) {
-    console.error(`[search] WeatherAPI Search Error for "${q}":`, error.response ? JSON.stringify(error.response.data) : error.message);
+    console.error(
+      `[search] WeatherAPI Search Error for "${q}":`,
+      error.response ? JSON.stringify(error.response.data) : error.message
+    );
   }
 
   if (suggestions.length === 0) {
     try {
-      const osm = await axios.get('https://nominatim.openstreetmap.org/search', {
-        params: { q, format: 'json', addressdetails: 1, limit: 8 },
-        headers: { 'User-Agent': 'StormSense-Hackathon-App/1.0 (contact: demo@example.com)' },
-        timeout: 10000
-      });
+      const osm = await axios.get(
+        'https://nominatim.openstreetmap.org/search',
+        {
+          params: {
+            q,
+            format: 'json',
+            addressdetails: 1,
+            limit: 8
+          },
+          headers: {
+            'User-Agent':
+              'StormSense-Hackathon-App/1.0 (contact: demo@example.com)'
+          },
+          timeout: 10000
+        }
+      );
+
       suggestions = osm.data.map(item => {
         const addr = item.address || {};
-        const region = [addr.state_district, addr.state].filter(Boolean).join(', ') || addr.country || '';
+        const region =
+          [addr.state_district, addr.state].filter(Boolean).join(', ') ||
+          addr.country ||
+          '';
+
         return {
-          name: addr.village || addr.town || addr.city || addr.suburb || addr.hamlet || item.display_name.split(',')[0],
+          name:
+            addr.village ||
+            addr.town ||
+            addr.city ||
+            addr.suburb ||
+            addr.hamlet ||
+            item.display_name.split(',')[0],
           region,
           lat: item.lat,
           lon: item.lon
         };
       });
-      console.log(`[search] Nominatim fallback returned ${suggestions.length} results for "${q}"`);
+
+      console.log(
+        `[search] Nominatim fallback returned ${suggestions.length} results for "${q}"`
+      );
     } catch (error) {
-      console.error(`[search] Nominatim Fallback Error for "${q}":`, error.response ? error.response.status : error.message);
+      console.error(
+        '[search] Nominatim Fallback Error:',
+        error.response ? error.response.status : error.message
+      );
     }
   }
 
   if (suggestions.length === 0) {
-    console.log(`[search] No results anywhere for "${q}"`);
-    return res.status(500).json({ error: 'Failed to fetch location search results' });
+    return res.status(500).json({
+      error: 'Failed to fetch location search results'
+    });
   }
 
   res.json(suggestions);
 });
 
-// 2. Main Weather & Forecast Endpoint (Mapped for StormSense UI)
+// Main weather and forecast endpoint
 app.get('/api/weather', async (req, res) => {
   try {
     const { q } = req.query;
-    if (!q) return res.status(400).json({ error: 'Query parameter "q" is required' });
 
-    // Fetch 5-day forecast with weather alerts enabled
+    if (!q) {
+      return res.status(400).json({
+        error: 'Query parameter "q" is required'
+      });
+    }
+
     const response = await axios.get(`${BASE_URL}/forecast.json`, {
-      params: { key: API_KEY, q, days: 5, alerts: 'yes', aqi: 'no' }
+      params: {
+        key: API_KEY,
+        q,
+        days: 5,
+        alerts: 'yes',
+        aqi: 'no'
+      }
     });
 
     const data = response.data;
@@ -113,29 +155,41 @@ app.get('/api/weather', async (req, res) => {
 
     const severity = calculateSeverity(current, alerts);
 
-    // Map hourly forecast for next 6 hours
-    const nowHour = new Date().getHours();
-    const todayHours = forecastDays[0].hour;
-    const nextHours = todayHours.filter(h => new Date(h.time).getHours() > nowHour).slice(0, 6);
+    // FIX: Use the selected location's local time and search
+    // across all forecast days for the next six hours.
+    const localTime = location.localtime;
+    const allHours = forecastDays.flatMap(day => day.hour || []);
 
-    const mappedHours = nextHours.map(h => ({
-      time: h.time.split(' ')[1],
-      temp: Math.round(h.temp_c),
-      pop: h.chance_of_rain,
-      icon: h.condition.text.toLowerCase().includes('rain') ? 'rain' : 'cloudy'
+    const nextHours = allHours
+      .filter(hour => hour.time > localTime)
+      .slice(0, 6);
+
+    const mappedHours = nextHours.map(hour => ({
+      time: hour.time.split(' ')[1],
+      temp: Math.round(hour.temp_c),
+      pop: hour.chance_of_rain,
+      icon: hour.condition.text.toLowerCase().includes('rain')
+        ? 'rain'
+        : 'cloudy'
     }));
 
-    // Map 5-day outlook
-    const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-    const mappedDays = forecastDays.map((d, index) => {
-      const dateObj = new Date(d.date);
+    // Five-day outlook
+    const dayNames = [
+      'Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'
+    ];
+
+    const mappedDays = forecastDays.map((day, index) => {
+      const dateObj = new Date(`${day.date}T12:00:00`);
+
       return {
         name: index === 0 ? 'Today' : dayNames[dateObj.getDay()],
-        cond: d.day.condition.text,
-        high: Math.round(d.day.maxtemp_c),
-        low: Math.round(d.day.mintemp_c),
-        pop: d.day.daily_chance_of_rain,
-        icon: d.day.condition.text.toLowerCase().includes('rain') ? 'rain' : 'mostly-clear'
+        cond: day.day.condition.text,
+        high: Math.round(day.day.maxtemp_c),
+        low: Math.round(day.day.mintemp_c),
+        pop: day.day.daily_chance_of_rain,
+        icon: day.day.condition.text.toLowerCase().includes('rain')
+          ? 'rain'
+          : 'mostly-clear'
       };
     });
 
@@ -158,36 +212,51 @@ app.get('/api/weather', async (req, res) => {
       uv: current.uv,
       visibility: current.vis_km,
       precipChance: forecastDays[0].day.daily_chance_of_rain,
-      alertLevel: alerts.length > 0 ? 'warning' : (severity.zone !== 'calm' ? severity.zone : null),
+      alertLevel:
+        alerts.length > 0
+          ? 'warning'
+          : (severity.zone !== 'calm' ? severity.zone : null),
       severity,
       hours: mappedHours,
       days: mappedDays
     });
   } catch (error) {
-    console.error('Weather API Error:', error.response ? error.response.data : error.message);
-    res.status(500).json({ error: 'Failed to retrieve weather data' });
+    console.error(
+      'Weather API Error:',
+      error.response ? error.response.data : error.message
+    );
+
+    res.status(500).json({
+      error: 'Failed to retrieve weather data'
+    });
   }
 });
 
-// 3. Batch GIS GIS Map Endpoint
+// Batch GIS map endpoint
 app.post('/api/gis/batch', async (req, res) => {
   try {
-    const { locations } = req.body; // Array of location strings or coordinates
+    const { locations } = req.body;
+
     if (!locations || !Array.isArray(locations)) {
-      return res.status(400).json({ error: 'Array of "locations" is required' });
+      return res.status(400).json({
+        error: 'Array of "locations" is required'
+      });
     }
 
     const requests = locations.map(loc =>
-      axios.get(`${BASE_URL}/current.json`, { params: { key: API_KEY, q: loc } })
+      axios.get(`${BASE_URL}/current.json`, {
+        params: { key: API_KEY, q: loc }
+      })
     );
 
     const responses = await Promise.allSettled(requests);
 
     const gisData = responses
-      .filter(r => r.status === 'fulfilled')
-      .map(r => {
-        const data = r.value.data;
+      .filter(result => result.status === 'fulfilled')
+      .map(result => {
+        const data = result.value.data;
         const severity = calculateSeverity(data.current);
+
         return {
           name: data.location.name,
           region: `${data.location.region ? data.location.region + ', ' : ''}${data.location.country}`,
@@ -203,18 +272,20 @@ app.post('/api/gis/batch', async (req, res) => {
     res.json(gisData);
   } catch (error) {
     console.error('GIS Batch API Error:', error.message);
-    res.status(500).json({ error: 'Failed to process GIS map batch points' });
+
+    res.status(500).json({
+      error: 'Failed to process GIS map batch points'
+    });
   }
 });
 
-// 4. Dense Regional GIS Endpoint — auto-discovers real named localities (villages,
-// towns, suburbs) inside a bounding box via OpenStreetMap's free Overpass API,
-// then checks live weather/severity at a spread of them. This is what powers a
-// map full of real hyper-local place names instead of a fixed hardcoded list.
+// Dense regional GIS endpoint
 app.get('/api/gis/dense', async (req, res) => {
   try {
-    // Default box roughly covers Assam, India. Pass ?bbox=south,west,north,east to override.
-    const bbox = (req.query.bbox || '24.0,89.6,28.3,96.2').split(',').map(Number);
+    const bbox = (
+      req.query.bbox || '24.0,89.6,28.3,96.2'
+    ).split(',').map(Number);
+
     const limit = Math.min(parseInt(req.query.limit, 10) || 40, 80);
     const [south, west, north, east] = bbox;
 
@@ -229,48 +300,105 @@ app.get('/api/gis/dense', async (req, res) => {
     const overpassRes = await axios.post(
       'https://overpass-api.de/api/interpreter',
       overpassQuery,
-      { headers: { 'Content-Type': 'text/plain' }, timeout: 40000 }
+      {
+        headers: { 'Content-Type': 'text/plain' },
+        timeout: 40000
+      }
     );
 
     const rawCount = (overpassRes.data.elements || []).length;
-    const placeRank = { city: 0, town: 1, suburb: 2, neighbourhood: 3, village: 4, hamlet: 5 };
+
+    const placeRank = {
+      city: 0,
+      town: 1,
+      suburb: 2,
+      neighbourhood: 3,
+      village: 4,
+      hamlet: 5
+    };
+
     let places = (overpassRes.data.elements || [])
       .filter(el => el.tags && el.tags.name && el.lat && el.lon)
-      .map(el => ({ name: el.tags.name, lat: el.lat, lon: el.lon, rank: placeRank[el.tags.place] ?? 6 }))
+      .map(el => ({
+        name: el.tags.name,
+        lat: el.lat,
+        lon: el.lon,
+        rank: placeRank[el.tags.place] ?? 6
+      }))
       .sort((a, b) => a.rank - b.rank);
 
-    console.log(`[gis/dense] Overpass returned ${rawCount} raw elements, ${places.length} usable named places`);
+    console.log(
+      `[gis/dense] Overpass returned ${rawCount} raw elements, ${places.length} usable named places`
+    );
 
     let selected = places;
+
     if (places.length > limit) {
       const step = places.length / limit;
       const seen = new Set();
       selected = [];
+
       for (let i = 0; i < limit; i++) {
-        const idx = Math.min(places.length - 1, Math.floor(i * step));
-        if (!seen.has(idx)) { seen.add(idx); selected.push(places[idx]); }
+        const idx = Math.min(
+          places.length - 1,
+          Math.floor(i * step)
+        );
+
+        if (!seen.has(idx)) {
+          seen.add(idx);
+          selected.push(places[idx]);
+        }
       }
     }
-    console.log(`[gis/dense] Requesting live weather for ${selected.length} selected places`);
 
-    const requests = selected.map(p =>
-      axios.get(`${BASE_URL}/current.json`, { params: { key: API_KEY, q: `${p.lat},${p.lon}` }, timeout: 15000 })
-        .then(r => ({ place: p, data: r.data }))
-        .catch(err => { throw { place: p, message: err.response ? JSON.stringify(err.response.data) : err.message }; })
+    console.log(
+      `[gis/dense] Requesting live weather for ${selected.length} selected places`
     );
+
+    const requests = selected.map(place =>
+      axios.get(`${BASE_URL}/current.json`, {
+        params: {
+          key: API_KEY,
+          q: `${place.lat},${place.lon}`
+        },
+        timeout: 15000
+      })
+        .then(result => ({
+          place,
+          data: result.data
+        }))
+        .catch(error => {
+          throw {
+            place,
+            message: error.response
+              ? JSON.stringify(error.response.data)
+              : error.message
+          };
+        })
+    );
+
     const settled = await Promise.allSettled(requests);
 
-    const failed = settled.filter(r => r.status === 'rejected');
+    const failed = settled.filter(result => result.status === 'rejected');
+
     if (failed.length) {
-      console.log(`[gis/dense] ${failed.length} of ${selected.length} weather lookups failed:`);
-      failed.slice(0, 5).forEach(f => console.log(`   - ${f.reason.place.name}: ${f.reason.message}`));
+      console.log(
+        `[gis/dense] ${failed.length} of ${selected.length} weather lookups failed:`
+      );
+
+      failed.slice(0, 5).forEach(result => {
+        console.log(
+          `   - ${result.reason.place.name}: ${result.reason.message}`
+        );
+      });
     }
 
     const gisData = settled
-      .filter(r => r.status === 'fulfilled')
-      .map(r => {
-        const { place, data } = r.value;
+      .filter(result => result.status === 'fulfilled')
+      .map(result => {
+        const { place, data } = result.value;
         const severity = calculateSeverity(data.current);
+
         return {
           name: place.name,
           region: `${data.location.region ? data.location.region + ', ' : ''}${data.location.country}`,
@@ -283,76 +411,40 @@ app.get('/api/gis/dense', async (req, res) => {
         };
       });
 
-    console.log(`[gis/dense] Returning ${gisData.length} markers to the frontend`);
+    console.log(
+      `[gis/dense] Returning ${gisData.length} markers to the frontend`
+    );
+
     res.json(gisData);
   } catch (error) {
-    console.error('[gis/dense] Fatal error:', error.response ? JSON.stringify(error.response.data) : error.message);
-    res.status(500).json({ error: 'Failed to generate dense regional map' });
+    console.error(
+      '[gis/dense] Fatal error:',
+      error.response ? JSON.stringify(error.response.data) : error.message
+    );
+
+    res.status(500).json({
+      error: 'Failed to generate dense regional map'
+    });
   }
 });
 
-// ------------------------------------------------------------
-// AI NOWCASTING ENDPOINT
-// ------------------------------------------------------------
-app.get('/api/ai/predict', (req, res) => {
-
-    const pythonPath = path.join(
-        __dirname,
-        '..',
-        'StormSense-AI',
-        '.venv',
-        'Scripts',
-        'python.exe'
+// AI nowcasting endpoint
+app.get('/api/ai/predict', async (req, res) => {
+  try {
+    const response = await axios.get(
+      'http://127.0.0.1:5001/predict',
+      { timeout: 120000 }
     );
 
-    const scriptPath = path.join(
-        __dirname,
-        '..',
-        'StormSense-AI',
-        'training',
-        'ai_api.py'
-    );
+    res.status(200).json(response.data);
+  } catch (error) {
+    console.error('[AI] Prediction service error:', error.message);
 
-    console.log("Python path:", pythonPath);
-
-  
-
-  execFile(
-    pythonPath,
-    [scriptPath],
-    {
-      cwd: path.join(__dirname, '..'),
-      timeout: 120000
-    },
-    (error, stdout, stderr) => {
-
-      if (error) {
-        console.error('[AI] Prediction error:', error);
-        console.error('[AI] stderr:', stderr);
-
-        return res.status(500).json({
-          success: false,
-          error: 'AI prediction failed',
-          details: stderr || error.message
-        });
-      }
-
-      try {
-        const result = JSON.parse(stdout.trim());
-
-        res.json(result);
-
-      } catch (parseError) {
-
-        console.error('[AI] Invalid Python output:', stdout);
-
-        res.status(500).json({
-          success: false,
-          error: 'Invalid AI response'
-        });
-      }
-    }
-  );
+    res.status(503).json({
+      success: false,
+      error: 'AI service unavailable. Check whether the Python AI server is running.'
+    });
+  }
 });
 
 // Proxy India state boundaries to avoid browser CORS
@@ -365,6 +457,7 @@ app.get('/api/gis/india-states', async (req, res) => {
     res.json(response.data);
   } catch (error) {
     console.error('India states GeoJSON error:', error.message);
+
     res.status(500).json({
       success: false,
       error: 'Failed to load India state boundaries'
@@ -373,6 +466,10 @@ app.get('/api/gis/india-states', async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`StormSense backend server running on http://localhost:${PORT}`);
-  console.log(`Try it: http://localhost:${PORT}/api/weather?q=London`);
+  console.log(
+    `StormSense backend server running on http://localhost:${PORT}`
+  );
+  console.log(
+    `Try it: http://localhost:${PORT}/api/weather?q=London`
+  );
 });
