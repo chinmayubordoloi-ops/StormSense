@@ -1188,14 +1188,14 @@
     </div>
 
     <div class="hero-hourly">
-      <div class="hero-hourly-title">Next hours</div>
+      <div class="hero-hourly-title">Next 6 hours · temperature / rain chance</div>
       <div class="hourly-strip" id="hourlyStrip"></div>
     </div>
   </section>
 
   <section class="metrics" id="metricsRow"></section>
 
-  <div class="section-title">Forecast</div>
+  <div class="section-title">3-day forecast</div>
   <section class="forecast" id="forecastRow"></section>
 
   <section class="gis-map">
@@ -1508,37 +1508,61 @@
     var loc = apiData.location || {};
     var w = apiData.weather || {};
     var forecast = Array.isArray(apiData.forecast) ? apiData.forecast : [];
+    var rawHours = Array.isArray(apiData.hourlyForecast) ? apiData.hourlyForecast : [];
+
+    function iconFor(condition){
+      var c = String(condition || '').toLowerCase();
+      if (c.includes('thunder') || c.includes('storm')) return 'storm';
+      if (c.includes('rain') || c.includes('drizzle') || c.includes('shower')) return 'rain';
+      if (c.includes('snow') || c.includes('sleet') || c.includes('ice')) return 'snow';
+      if (c.includes('fog') || c.includes('mist')) return 'fog';
+      if (c.includes('overcast')) return 'overcast';
+      if (c.includes('cloud')) return 'cloudy';
+      if (c.includes('wind')) return 'wind';
+      if (c.includes('sunny') || c.includes('clear')) return 'clear';
+      return 'mostly-clear';
+    }
 
     var dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-
     var days = forecast.map(function(d, index){
       var dateObj = new Date(d.date + 'T00:00:00');
       return {
-        name: index === 0 ? 'Today' : dayNames[dateObj.getDay()],
+        name: index === 0 ? 'Today' : (index === 1 ? 'Tomorrow' : dayNames[dateObj.getDay()]),
+        date: d.date,
         cond: d.condition || 'Unknown',
-        high: Math.round(d.maxTempC),
-        low: Math.round(d.minTempC),
+        high: Math.round(Number(d.maxTempC)),
+        low: Math.round(Number(d.minTempC)),
         pop: Number(d.chanceOfRain || 0),
-        icon: String(d.condition || '').toLowerCase().includes('thunder') ? 'storm' :
-              String(d.condition || '').toLowerCase().includes('rain') ? 'rain' :
-              String(d.condition || '').toLowerCase().includes('snow') ? 'snow' :
-              String(d.condition || '').toLowerCase().includes('fog') ? 'fog' :
-              String(d.condition || '').toLowerCase().includes('cloud') ||
-              String(d.condition || '').toLowerCase().includes('overcast') ? 'cloudy' : 'clear'
+        icon: iconFor(d.condition)
       };
     });
 
-    /*
-     * The current weatherController does not yet expose hourly forecast data.
-     * Keep the UI stable and show a clear message instead of failing.
-     */
-    var hours = [{
-      time: '--',
-      temp: Math.round(w.temperature),
-      pop: Number(forecast[0] ? forecast[0].chanceOfRain || 0 : 0),
-      icon: String(w.condition || '').toLowerCase().includes('thunder') ? 'storm' :
-            String(w.condition || '').toLowerCase().includes('rain') ? 'rain' : 'cloudy'
-    }];
+    // Show the next six forecast hours, starting with the next full hour.
+    var now = new Date();
+    var nextHour = new Date(now);
+    nextHour.setMinutes(0, 0, 0);
+    nextHour.setHours(nextHour.getHours() + 1);
+    var hours = rawHours.filter(function(h){
+      var t = new Date(String(h.time || '').replace(' ', 'T'));
+      return !isNaN(t.getTime()) && t >= nextHour;
+    }).slice(0, 6).map(function(h){
+      var t = new Date(String(h.time || '').replace(' ', 'T'));
+      return {
+        time: t.toLocaleTimeString([], { hour: 'numeric', hour12: true }),
+        temp: Math.round(Number(h.temperature)),
+        pop: Number(h.chanceOfRain || 0),
+        icon: iconFor(h.condition)
+      };
+    });
+
+    // Keep the dashboard readable if an older backend response has no hourlyForecast.
+    if (!hours.length) {
+      hours = [{
+        time: 'Now', temp: Math.round(Number(w.temperature)),
+        pop: Number(forecast[0] ? forecast[0].chanceOfRain || 0 : 0),
+        icon: iconFor(w.condition)
+      }];
+    }
 
     return {
       city: {
@@ -1547,15 +1571,15 @@
         lat: loc.latitude,
         lon: loc.longitude
       },
-      temp: Math.round(w.temperature),
-      feelsLike: Math.round(w.feelsLike),
+      temp: Math.round(Number(w.temperature)),
+      feelsLike: Math.round(Number(w.feelsLike)),
       high: days.length ? days[0].high : '--',
       low: days.length ? days[0].low : '--',
       condition: w.condition || 'Unknown',
       humidity: Number(w.humidity || 0),
-      windSpeed: Math.round(w.windSpeedKph || 0),
+      windSpeed: Math.round(Number(w.windSpeedKph || 0)),
       windDir: w.windDirection || '--',
-      pressure: Math.round(w.pressureMb || 0),
+      pressure: Math.round(Number(w.pressureMb || 0)),
       uv: Number(w.uvIndex || 0),
       visibility: Number(w.visibilityKm || 0),
       precipChance: days.length ? days[0].pop : 0,
